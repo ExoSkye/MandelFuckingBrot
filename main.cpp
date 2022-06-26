@@ -1,21 +1,17 @@
 #include <iostream>
+#ifndef CUDA_BUILD
 #include <hip/hip_runtime.h>
-#include <unistd.h>
+#endif
 #include "palette.hpp"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-#define HIGH_RES_X 60000
-#define HIGH_RES_Y 60000
-#define HIGH_RES_CHUNK_X 5000
-#define HIGH_RES_CHUNK_Y 5000
+uint64_t RES_X = 25000;
+uint64_t RES_Y = 25000;
+uint32_t RES_CHUNK_X = 5000;
+uint32_t RES_CHUNK_Y = 5000;
 
-uint64_t LOW_RES_X = 60000;
-uint64_t LOW_RES_Y = 60000;
-uint32_t LOW_RES_CHUNK_X = 5000;
-uint32_t LOW_RES_CHUNK_Y = 5000;
-
-#define palette palette_low
+#define palette palette_high
 
 template<typename T>
 struct dim2 {
@@ -24,12 +20,11 @@ struct dim2 {
 };
 
 template<typename T>
-__global__ void mandelbrot(uint8_t* r, uint8_t* g, uint8_t* b,
-                           double zoom, double2 target, dim2<T> offset, dim2<T> size, int max_iter) {
+__global__ void mandelbrot(uint8_t* out, double zoom, double2 target, dim2<T> offset, dim2<T> size, int max_iter) {
     uint64_t px = blockDim.x * blockIdx.x + threadIdx.x + offset.x;
     uint64_t py = blockDim.y * blockIdx.y + threadIdx.y + offset.y;
 
-    uint64_t idx = (py * size.y) + px;
+    uint64_t idx = 3 * ((py * size.y) + px);
 
     if (px >= size.x || py >= size.y)
         return;
@@ -51,18 +46,21 @@ __global__ void mandelbrot(uint8_t* r, uint8_t* g, uint8_t* b,
         iteration++;
     }
 
-    r[idx] = palette[iteration][0];
-    g[idx] = palette[iteration][1];
-    b[idx] = palette[iteration][2];
+    out[idx] = palette[iteration][0];
+    out[idx + 1] = palette[iteration][1];
+    out[idx + 2] = palette[iteration][2];
 }
 
 int main() {
-    uint8_t *r, *g, *b;
-    hipMallocManaged(&r, LOW_RES_X * LOW_RES_Y * sizeof(uint8_t));
-    hipMallocManaged(&g, LOW_RES_X * LOW_RES_Y * sizeof(uint8_t));
-    hipMallocManaged(&b, LOW_RES_X * LOW_RES_Y * sizeof(uint8_t));
+    uint8_t *out;
 
-    dim3 chunk_size { LOW_RES_CHUNK_X, LOW_RES_CHUNK_Y };
+#ifdef CUDA_BUILD
+    cudaMallocManaged(&out, RES_X * RES_Y * 3 * sizeof(uint8_t));
+#else
+    hipMallocManaged(&out, RES_X * RES_Y * 3 * sizeof(uint8_t));
+#endif
+
+    dim3 chunk_size { RES_CHUNK_X, RES_CHUNK_Y };
 
     dim3 threadsPerBlock = dim3(32, 32);
 
@@ -71,36 +69,31 @@ int main() {
         (chunk_size.y + threadsPerBlock.y - 1) / threadsPerBlock.y
     );
 
-    for (uint64_t off_x = 0; off_x < LOW_RES_X; off_x += chunk_size.x) {
-        for (uint64_t off_y = 0; off_y < LOW_RES_Y; off_y += chunk_size.y) {
+    for (uint64_t off_x = 0; off_x < RES_X; off_x += chunk_size.x) {
+        for (uint64_t off_y = 0; off_y < RES_Y; off_y += chunk_size.y) {
+	
             printf("Rendering range (%lu-%lu, %lu-%lu)\n", off_x, off_x + chunk_size.x, off_y, off_y + chunk_size.y);
-
-            hipLaunchKernelGGL(mandelbrot<uint64_t>, blocksPerGrid, threadsPerBlock, 0, 0, r, g, b,
+#ifdef CUDA_BUILD
+            mandelbrot<uint64_t><<<blocksPerGrid, threadsPerBlock>>>(
+#else
+            hipLaunchKernelGGL(mandelbrot<uint64_t>, blocksPerGrid, threadsPerBlock, 0, 0,
+#endif
+                               out,
                                1000, {-0.745, 0.095}, {off_x, off_y},
-                               {LOW_RES_X, LOW_RES_Y}, MAX_ITER_LOW);
+                               {RES_X, RES_Y}, MAX_ITER_HIGH
+                               );
 
-            hipDeviceSynchronize();
+
+
         }
+#ifdef CUDA_BUILD
+        cudaDeviceSynchronize();
+#else
+        hipDeviceSynchronize();
+#endif
     }
 
-    uint8_t *all;
-    all = (uint8_t*)malloc(LOW_RES_X * LOW_RES_Y * 3 * sizeof(uint8_t));
-
-    for (uint64_t i = 0; i < LOW_RES_X * LOW_RES_Y * 3; i++) {
-        switch (i % 3) {
-            case 0:
-                all[i] = r[i / 3];
-                break;
-            case 1:
-                all[i] = g[i / 3];
-                break;
-            case 2:
-                all[i] = b[i / 3];
-                break;
-        }
-    }
-
-    stbi_write_png("out.png", LOW_RES_X, LOW_RES_Y, 3, all, LOW_RES_X * 3 * sizeof(uint8_t));
+    stbi_write_png("out.png", RES_X, RES_Y, 3, out, RES_X * 3 * sizeof(uint8_t));
 
     return 0;
 }

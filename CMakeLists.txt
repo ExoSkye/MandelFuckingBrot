@@ -1,11 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
-project(MandelFuckingBrot HIP CXX C)
 
-set(CMAKE_HIP_STANDARD 20)
+if (CUDA)
+    project(MandelFuckingBrot CUDA CXX C)
+    set(CMAKE_CUDA_STANDARD 20)
+else()
+    project(MandelFuckingBrot HIP CXX C)
+    set(CMAKE_HIP_STANDARD 20)
+    find_package(hip REQUIRED)
+endif()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
-find_package(hip REQUIRED)
 
 set(MAXITER_HIGH 6000 CACHE STRING "Max iterations (HQ)")
 set(MAXITER_LOW 1000 CACHE STRING "Max iterations")
@@ -17,9 +21,16 @@ add_custom_command(
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/generatePalette.py ${CMAKE_CURRENT_SOURCE_DIR}/palette.py
 )
 
-add_executable(MandelFuckingBrot main.cpp gradient.hpp)
+add_executable(MandelFuckingBrot gradient.hpp)
 
-target_link_libraries(MandelFuckingBrot PRIVATE hip::host hip::device)
+if(CUDA)
+    target_sources(MandelFuckingBrot PRIVATE main.cu)
+    target_include_directories(MandelFuckingBrot PRIVATE ${ROCM_PATH}/include/hip/nvidia_detail/)
+    target_compile_definitions(MandelFuckingBrot PRIVATE CUDA_BUILD)
+else()
+    target_sources(MandelFuckingBrot PRIVATE main.cpp)
+    target_link_libraries(MandelFuckingBrot PRIVATE hip::host hip::device)
+endif()
 
 target_compile_definitions(MandelFuckingBrot PUBLIC MAX_ITER_HIGH=${MAXITER_HIGH} MAX_ITER_LOW=${MAXITER_LOW})
 
